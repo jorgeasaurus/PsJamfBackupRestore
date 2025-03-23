@@ -60,6 +60,9 @@ if ($null -eq $script:Config) {
     throw "Config is not initialized."
 }
 
+# Request a Jamf token
+$script:Config.Token = Get-JamfToken -Username $script:Config.Username -Password $script:Config.Password -JamfProUrl $script:Config.JamfProUrl
+
 # Download multiple resource objects from Jamf Pro
 @(
     "osxconfigurationprofiles",
