@@ -11,7 +11,7 @@
     Author         : Jorge Suarez
     Prerequisite   : PowerShell
     Dependencies   : Requires access to Jamf Pro API
-    Version        : 0
+    Version        : 0.1.1
 
 .COMPONENT
     Jamf Pro API Integration
@@ -53,7 +53,7 @@ function Get-JamfToken {
     }
 
     try {
-        $response = Invoke-WebRequest -Uri $tokenUrl -Method Post -Body $body -Headers $headers
+        $response = Invoke-WebRequest -Uri $tokenUrl -Method Post -Body $body -Headers $headers -UseBasicParsing
         $token = ($response.Content | ConvertFrom-Json).PSObject.Properties["access_token", "token"].Where({ $_.Value }).Value
         return $token
     } catch {
@@ -102,8 +102,21 @@ function Invoke-JamfApiCall {
         "Accept"        = $accept
     }
 
+    $apiSplat = @{
+        URI             = $fullUrl
+        Method          = $Method
+        Headers         = $headers
+        UseBasicParsing = $true
+    }
+    
+    if ($Body) {
+        $apiSplat.Add("Body", $Body)
+    }
+
     try {
-        $response = Invoke-WebRequest -Uri $fullUrl -Method $Method -Headers $headers -Body $Body -UseBasicParsing
+        
+        $response = Invoke-WebRequest @apiSplat
+
         if ($XML) {
             return  $response.Content 
         } else { 
@@ -172,12 +185,18 @@ function Download-JamfObject {
         $jamfObject = Get-JamfObject -Id $Id -Resource $Resource
         $extension = if ($Resource -eq "computer-prestages") { "json" } else { "xml" }
         $displayName = Get-SanitizedDisplayName -Id $Id -Name $jamfObject.name
-        $filePath = Join-Path -Path $DownloadDirectory -ChildPath "$($id)_$displayName.$extension"
-        $jamfObject.payload | Out-File -FilePath $filePath -Encoding utf8
-
-        if ($extension -eq "xml") { Format-XML -FilePath $filePath }
+        if ($jamfObject.plist) {
+            $plistFilePath = Join-Path -Path $DownloadDirectory -ChildPath "$($id)_$displayName.plist"
+            $jamfObject.plist | Out-File -FilePath $plistFilePath -Encoding utf8
+            Format-XML -FilePath $plistFilePath
+        }
+        if ($jamfObject.payload) {
+            $payloadFilePath = Join-Path -Path $DownloadDirectory -ChildPath "$($id)_$displayName.$extension"
+            $jamfObject.payload | Out-File -FilePath $payloadFilePath -Encoding utf8
+            if ($extension -eq "xml") { Format-XML -FilePath $payloadFilePath }
+        }
         if ($jamfObject.script) {
-            $scriptFilePath = Join-Path -Path $DownloadDirectory -ChildPath "$displayName.sh"
+            $scriptFilePath = Join-Path -Path $DownloadDirectory -ChildPath "$($id)_$displayName.sh"
             $jamfObject.script | Out-File -FilePath $scriptFilePath -Encoding utf8
         }
     } catch {
@@ -201,13 +220,15 @@ function Get-JamfObject {
         }
     } else {
         $xml = [xml]$response
+        $payload = $xml.DocumentElement.FirstChild.payloads
         $name = $xml.SelectSingleNode("//name").InnerText
         $script = if ($Resource -eq "scripts") { $xml.SelectSingleNode("//script_contents").InnerText }
         elseif ($Resource -eq "computerextensionattributes") { $xml.SelectSingleNode("//input_type/script").InnerText }
         else { $null }
         return @{
             name    = $name
-            payload = $response
+            payload = $payload
+            plist   = $response 
             script  = $script
         }
     }
@@ -240,7 +261,11 @@ function Get-JamfObjectIds {
     )
 
     # Invoke the Jamf API call to get the response
-    $apiVersion = if ($Resource -eq "computer-prestages") { "v2" } else { "classic" }
+    $apiVersion = switch ($Resource) {
+        "computer-prestages" { "v2" }
+        "patch-software-title-configurations" { "v2" }
+        default { "classic" }
+    }
     $response = Invoke-JamfApiCall -Endpoint $Resource -Method "GET" -ApiVersion $ApiVersion
 
     if (-not $response) {
@@ -345,13 +370,13 @@ function Upload-JamfObject {
     # Use the Invoke-JamfApiCall helper function to perform the upload.
     try {
         $params = @{
-            BaseUrl = $BaseUrl
+            BaseUrl    = $BaseUrl
             ApiVersion = $ApiVersion
-            Endpoint = $endpoint
-            Method = $method
-            Body = $payload
-            Token = $Token
-            XML = $isXML
+            Endpoint   = $endpoint
+            Method     = $method
+            Body       = $payload
+            Token      = $Token
+            XML        = $isXML
         }
         $response = Invoke-JamfApiCall @params
         Write-Output "Upload successful. Response:" 
@@ -418,9 +443,18 @@ function Upload-JamfObjects {
 
             Upload-JamfObject @params
             Write-Host "Successfully uploaded $($file.Name)" -ForegroundColor Green
-        }
-        catch {
+        } catch {
             Write-Error "Failed to upload $($file.Name): $_"
         }
     }
 }
+function Invoke-GitPush {
+    git add .
+    $commitMessage = "Manual-Commit on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    git commit -m $commitMessage
+
+    # Push changes to the repository
+    git push origin main
+
+    Write-Output "Changes pushed to Repo."
+} # Invoke-GitPush
