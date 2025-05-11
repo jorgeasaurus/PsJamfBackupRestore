@@ -11,7 +11,8 @@
     Author         : Jorge Suarez
     Prerequisite   : PowerShell
     Dependencies   : Requires access to Jamf Pro API
-    Version        : 0.1.1
+    Version        : 0.1.2
+    Contributors   : Cyril Niklaus
 
 .COMPONENT
     Jamf Pro API Integration
@@ -118,14 +119,34 @@ function Invoke-JamfApiCall {
         $response = Invoke-WebRequest @apiSplat
 
         if ($XML) {
-            return  $response.Content 
-        } else { 
-            return ( $response.Content | ConvertFrom-Json )
+            return $response.Content
+        } else {
+            return ($response.Content | ConvertFrom-Json)
         }
     } catch {
-        throw "API Error ($Method $fullUrl): $_"
+        if ($_.Exception.Response.StatusCode -eq 401) {
+            Write-Host "Token expired. Renewing token..."
+            $Config.Token = Get-JamfToken -BaseUrl $BaseUrl
+            $headers["Authorization"] = "Bearer $Config.Token"
+            $apiSplat["Headers"] = $headers
+
+            try {
+                $response = Invoke-WebRequest @apiSplat
+
+                if ($XML) {
+                    return $response.Content
+                } else {
+                    return ($response.Content | ConvertFrom-Json)
+                }
+            } catch {
+                throw "API Error ($Method $fullUrl): $_"
+            }
+        } else {
+            throw "API Error ($Method $fullUrl): $_"
+        }
     }
 }
+
 function Get-JamfApiUrl {
     param (
         [string]$BaseUrl,
@@ -182,6 +203,9 @@ function Download-JamfObject {
     )
 
     try {
+        # Check and renew the token if necessary
+        Test-AndRenewAPIToken -BaseUrl $Config.BaseUrl -Token $Config.Token
+        
         $jamfObject = Get-JamfObject -Id $Id -Resource $Resource
         $extension = if ($Resource -eq "computer-prestages") { "json" } else { "xml" }
         $displayName = Get-SanitizedDisplayName -Id $Id -Name $jamfObject.name
@@ -248,13 +272,17 @@ function Download-JamfObjects {
     if ($Id) {
         Download-JamfObject -Id $Id -Resource $Resource -DownloadDirectory $downloadDirectory
     } else {
-        Write-Output "Exporting all [$resource] objects"
+        Write-Output "Exporting all [$Resource] objects"
         $objectIds = Get-JamfObjectIds -Resource $Resource
         foreach ($objectId in $objectIds) {
+            # Check and renew the token if necessary
+            Test-AndRenewAPIToken -BaseUrl $Config.BaseUrl -Token $Config.Token
+            
             Download-JamfObject -Id $objectId -Resource $Resource -DownloadDirectory $downloadDirectory
         }
     }
 }
+
 function Get-JamfObjectIds {
     param (
         [string]$Resource
