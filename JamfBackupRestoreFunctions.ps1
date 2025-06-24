@@ -11,8 +11,8 @@
     Author         : Jorge Suarez
     Prerequisite   : PowerShell
     Dependencies   : Requires access to Jamf Pro API
-    Version        : 0.1.2
-    Contributors   : Cyril Niklaus
+    Version        : 0.1.3
+    Contributors   : Cyril Niklaus, wewenttothemoon
 
 .COMPONENT
     Jamf Pro API Integration
@@ -264,7 +264,7 @@ function Download-JamfObjects {
         [switch]$ClearExports
     )
 
-    $downloadDirectory = Join-Path (Get-Location) "JAMF_Backup\$Resource"
+    $downloadDirectory = Join-Path -Path $Config.DataFolder -ChildPath $Resource
 
     if ($ClearExports -and (Test-Path $downloadDirectory)) { Remove-Item $downloadDirectory -Recurse -Force }
     Ensure-DirectoryExists -DirectoryPath $downloadDirectory
