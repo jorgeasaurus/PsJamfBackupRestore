@@ -36,7 +36,7 @@ $script:Config.Token = Get-JamfToken @tokenParams
     "mobiledeviceapplications",
     "macapplications"
 ) | ForEach-Object {
-    Download-JamfObjects -resource $_ -ClearExports -Verbose
+    Download-JamfObjects -resource $_ -ClearExports
 }
 
 # Download a single object from Jamf Pro
