@@ -63,7 +63,7 @@ if ($null -eq $script:Config) {
 $tokenParams = @{
     Username    = $script:Config.Username
     Password    = $script:Config.Password
-    JamfProUrl  = $script:Config.JamfProUrl
+    BaseUrl     = $script:Config.BaseUrl
 }
 $script:Config.Token = Get-JamfToken @tokenParams
 

@@ -9,9 +9,9 @@ if ($null -eq $script:Config) {
 
 # Request a Jamf token
 $tokenParams = @{
-    Username    = $script:Config.Username
-    Password    = $script:Config.Password
-    JamfProUrl  = $script:Config.JamfProUrl
+    Username = $script:Config.Username
+    Password = $script:Config.Password
+    BaseUrl  = $script:Config.BaseUrl
 }
 
 $script:Config.Token = Get-JamfToken @tokenParams
