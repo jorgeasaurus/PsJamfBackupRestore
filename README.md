@@ -2,6 +2,8 @@
 
 A PowerShell-based utility for backing up and restoring JAMF Pro configurations through the JAMF API.
 
+![PowerShellOutputExample](output.png)
+
 ## 📋 Features
 
 - Authentication support for both:
