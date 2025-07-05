@@ -34,7 +34,13 @@ $script:Config.Token = Get-JamfToken @tokenParams
     "computers",
     "mobiledevices",
     "mobiledeviceapplications",
-    "macapplications"
+    "macapplications",
+    "users",
+    "usergroups",
+    "icon",
+    "sites",
+    "printers",
+    "dockitems"
 ) | ForEach-Object {
     Download-JamfObjects -resource $_ -ClearExports
 }

@@ -287,6 +287,7 @@ function Download-JamfObject {
         $jamfObject = Get-JamfObject -Id $Id -Resource $Resource
         $extension = if ($Resource -eq "computer-prestages") { "json" } else { "xml" }
         $displayName = Get-SanitizedDisplayName -Id $Id -Name $jamfObject.name
+							
 
         # Define resources that can be organized by site
         $siteBasedResources = @(
@@ -298,9 +299,13 @@ function Download-JamfObject {
             "mobiledevicegroups",
             "osxconfigurationprofiles",
             "policies",
-            "restrictedsoftware"
+            "restrictedsoftware",
+            "users",
+            "usergroups"
         )
 
+        $groupType = $null
+        $siteName = ""
         $subfolder = ""
         $targetDir = $DownloadDirectory  # default target directory
 
@@ -309,11 +314,12 @@ function Download-JamfObject {
             [xml]$xml = $jamfObject.plist
 
             # Set subfolder based on group type (smart vs static)
-            if ($Resource -in @("computergroups", "mobiledevicegroups")) {
-                $subfolder = if ($xml.SelectSingleNode("//is_smart").InnerText -eq 'true') { "smart" } else { "static" }
-            } 
+            if ($Resource -in @("computergroups", "mobiledevicegroups", "usergroups")) {
+                $groupType = if ($xml.SelectSingleNode("//is_smart").InnerText -eq 'true') { "smart" } else { "static" }
+            }
+
             # Organize by site if applicable
-            elseif ($siteBasedResources -contains $Resource) {
+            if ($hasSites -and ($siteBasedResources -contains $Resource)) {
                 $siteName = switch ($Resource) {
                     "computergroups" { $xml.computer_group.site.name }
                     "computers" { $xml.computer.general.site.name }
@@ -324,17 +330,35 @@ function Download-JamfObject {
                     "osxconfigurationprofiles" { $xml.os_x_configuration_profile.general.site.name }
                     "policies" { $xml.policy.general.site.name }
                     "restrictedsoftware" { $xml.restricted_software.general.site.name }
+                    "users" { $xml.user.sites.site.name }
+                    "usergroups" { $xml.user_group.site.name }
                 }
 
-                # Set site-based subfolder if site exists and isn't 'NONE'
-                if (-not [string]::IsNullOrWhiteSpace($siteName)) {
-                    $subfolder = if ($siteName -ne 'NONE') { $siteName }
+                #  Set site-based subfolder "GLOB" if site exists and site name is 'NONE'
+                if ([string]::IsNullOrWhiteSpace($siteName) -or $siteName -eq 'NONE') {
+                    $siteName = "GLOB" # Default to 'GLOB' if no site is specified for this resource (can be user defined)
                 }
             }
 
-            # Create and use subfolder if specified
+            # Build nested subfolder path based on group type and site name for applicable resources
+            if ($groupType) {
+                if ($hasSites -and $siteName) {
+                    # Organize by site name and group type for applicable resources
+                    $subfolder = Join-Path -Path $groupType -ChildPath $siteName
+                } else {
+                    # Organize by group type only for applicable resources with no site names
+                    $subfolder = $groupType
+                }
+            } elseif ($siteName) {
+                # Organize by site name when group type not applicable and site exists
+                $subfolder = $siteName
+            }
+
+            # Build final target directory path
             if ($subfolder) {
                 $targetDir = Join-Path -Path $DownloadDirectory -ChildPath $subfolder
+            } else {
+                $targetDir = $DownloadDirectory
             }
 
             # Save plist file
@@ -344,13 +368,21 @@ function Download-JamfObject {
             Format-XML -FilePath $plistFilePath
         }
 
-        # Save payload file if it exists
         if ($jamfObject.payload) {
-            Ensure-DirectoryExists -DirectoryPath $targetDir
-            $payloadFilePath = Join-Path -Path $targetDir -ChildPath "$displayName.$extension"
-            $jamfObject.payload | Out-File -FilePath $payloadFilePath -Encoding utf8
-            if ($extension -eq "xml") {
-                Format-XML -FilePath $payloadFilePath
+            if ($Resource -eq "icon") {
+                # Handle icon resource
+                $iconObject = $jamfObject.payload | ConvertFrom-Json
+                $downloadFileName = "$($iconObject.id)_$($iconObject.name)"
+                $downloadPath = Join-Path -Path $targetDir -ChildPath $downloadFileName
+                Invoke-WebRequest -Uri $iconObject.url -OutFile $downloadPath -ErrorAction Stop
+            } else {
+                # All other resources
+                Ensure-DirectoryExists -DirectoryPath $targetDir
+                $payloadFilePath = Join-Path -Path $targetDir -ChildPath "$displayName.$extension"
+                $jamfObject.payload | Out-File -FilePath $payloadFilePath -Encoding utf8
+                if ($extension -eq "xml") {
+                    Format-XML -FilePath $payloadFilePath
+                }
             }
         }
 
@@ -360,13 +392,13 @@ function Download-JamfObject {
             if ($displayName -like "*.sh") {
                 $displayName = $displayName -replace '\.sh$', ''
             }
-
             $scriptFilePath = Join-Path -Path $DownloadDirectory -ChildPath "$displayName.sh"
             $jamfObject.script | Out-File -FilePath $scriptFilePath -Encoding utf8
         }
     } catch {
         Write-Error "Error downloading $Resource : ID $Id - $_"
     }
+
 }
 function Get-JamfObject {
     param (
@@ -374,22 +406,31 @@ function Get-JamfObject {
         [string]$Resource   # Type of resource (e.g., policies, scripts, computer-prestages)
     )
 
-    # Determine API version - computer-prestages uses v3, others use classic API
-    $apiVersion = if ($Resource -eq "computer-prestages") { "v3" } else { "classic" }
-    
-    # Build endpoint URL - computer-prestages has different format than other resources
-    $endpoint = if ($Resource -eq "computer-prestages") { "$Resource/$Id" } else { "$Resource/id/$Id" }
-    
+    # Determine API version - computer-prestages uses v3, icon uses v1, others use classic API
+    switch ($Resource) {
+        "computer-prestages" { $apiVersion = "v3" ; break }
+        "icon" { $apiVersion = "v1" ; break }
+        default { $apiVersion = "classic" }
+    }
+
+    # Build endpoint URL - computer-prestages and icon have different API formats than other resources
+    $endpoint = if ($Resource -in @("computer-prestages", "icon")) { 
+        "$Resource/$Id" 
+    } else { 
+        "$Resource/id/$Id" 
+    }
+
     # Make API call - use XML format for classic API, JSON for v2/v3
     $response = Invoke-JamfApiCall -Endpoint $endpoint -Method "GET" -ApiVersion $apiVersion -XML:($apiVersion -eq "classic")
 
-    # Handle modern API responses (v2/v3)
-    if ($apiVersion -match "v2|v3") {
+    # Handle icon resource and modern API responses (v2/v3) 
+    if ( $Resource -eq "icon" -or $apiVersion -match "v2|v3" ) { 
         return @{
-            name    = $response.displayName    # Get display name from response
-            payload = $response | ConvertTo-Json -Depth 5  # Convert response to JSON
+            name    = $response.displayName  # or $response.name if you prefer for icons
+            payload = $response | ConvertTo-Json -Depth 5
         }
-    } 
+    }
+
     # Handle classic API responses
     else {
         $xml = [xml]$response  # Convert response to XML object
@@ -420,6 +461,13 @@ function Download-JamfObjects {
         [string]$Resource, # Required: Type of Jamf resource (e.g., policies, scripts)
         [switch]$ClearExports       # Optional: Clear existing exports before downloading
     )
+
+    # Verify token is valid before querying sites
+    Test-AndRenewAPIToken -BaseUrl $Config.BaseUrl -Token $Config.Token
+
+    # Get site details from Jamf
+    $jamfSites = Invoke-JamfApiCall -Endpoint "sites" -Method "GET" -ApiVersion "classic" -XML:$true
+    $hasSites = ([int]([xml]$jamfSites).sites.size) -ne 0 # Variable used in Download-JamfObject function to determine folder structure
 
     # Construct the download directory path using the resource type
     $downloadDirectory = Join-Path -Path $Config.DataFolder -ChildPath $Resource
@@ -455,15 +503,50 @@ function Download-JamfObjects {
 }
 function Get-JamfObjectIds {
     param (
-        [string]$Resource
+        [string]$Resource,
+        [int]$IconMaxId = $Config.IconMaxId
     )
 
     # Invoke the Jamf API call to get the response
     $apiVersion = switch ($Resource) {
         "computer-prestages" { "v3" }
         "patch-software-title-configurations" { "v2" }
+        "icon" { "v1" }
         default { "classic" }
     }
+    # testing (limitation: static iconmaxid count)
+    # special-case for icon, because there is no list endpoint
+    # alternative is to export only icons that are tied to self service policies, but that does not export all uploaded icons
+    # was unable to find a way to use the /v1/icon/download/{id} endpoint, which, as per documentation, allows to download icon in original scale/resolution (https://developer.jamf.com/jamf-pro/reference/get_v1-icon-download-id)
+    # No API role required (https://developer.jamf.com/jamf-pro/docs/privileges-and-deprecations)
+    if ($Resource -eq "icon") {
+        $validIds = @()
+        $consecutive404s = 0
+
+        foreach ($id in 1..$IconMaxId) {
+            $endpoint = "icon/$id"
+            try {
+                $iconResponse = Invoke-JamfApiCall -Endpoint $endpoint -Method "GET" -ApiVersion $apiVersion
+                if ($iconResponse -and $iconResponse.id) {
+                    $validIds += $iconResponse.id
+                    $consecutive404s = 0  # reset counter if success
+                }
+                $percentComplete = [math]::Round( ($id / $IconMaxId) * 100 )
+                Write-Progress -Activity "Getting icon IDs" -Status "Checking ID $id" -PercentComplete $percentComplete
+            } catch {
+                # 404s are expected for invalid icon IDs
+                $consecutive404s++
+                if ($consecutive404s -ge 20) {
+                    break # Break from loop after 20 consecutive 404s
+                }
+            }
+        }
+
+        # Break the progress bar
+        Write-Progress -Activity "Getting icon IDs" -Completed
+        return $validIds
+    }
+    # For all other resources, proceed normally
     $response = Invoke-JamfApiCall -Endpoint $Resource -Method "GET" -ApiVersion $ApiVersion
 
     if (-not $response) {
@@ -482,7 +565,7 @@ function Get-JamfObjectIds {
     # Extract the value of the first NoteProperty and get the IDs
     $objects = $response.$($firstProperty.Name)
 
-    # Uncomment if you want to export smart groups along with static groups
+    # Uncomment if you want to only export static groups
     # if ($Resource -in "computergroups", "mobiledevicegroups") {
     #     return ($objects | Where-Object { -not $_.is_smart }).id
     # }
